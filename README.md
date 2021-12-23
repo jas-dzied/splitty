@@ -2,7 +2,11 @@
 
 Splitty is a minimal speedrun timer for linux.
 
-Find out about it's usage using `splitty -h`.
+Before first launch, run `splitty init` to set up config directories.
+
+To launch the timer without any splits, just use `splitty start`
+
+To use splits, first create a new profile with `splitty make [name]`, and then you can edit the `splits` file, which is in a simple json format, to add splits. Then, you can use the splits with `splitty start [name]`
 
 # Dependancies
 
