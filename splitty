@@ -2,135 +2,169 @@
 
 import time
 import math
-import pynput
-import sys
 import os
-from rich.text import Text
-from rich.live import Live
-from rich.table import Table
-from rich.console import Console
+import sys
+import json
+import toml
+import copy
+import itertools
 from datetime import datetime
+from pynput import keyboard
+from rich.table import Table
+from rich.live import Live
+from rich.console import Console
 
-on = False
-start_time = time.time_ns()
-last_paused = start_time
-running = True
+CONFIG_LOCATION = f'{os.environ.get("HOME")}/.config/splitty'
+DEFAULT_CONFIG = """[keybinds]
+pause = "P"
+exit = "O"
+split = "I"
+reset = "R"
+"""
 
-def generate_table() -> Table:
+def format_time(time):
+    in_millis = int(time/1000000)
+    millis = in_millis % 1000
+    seconds = math.floor(in_millis/1000) % 60
+    minutes = math.floor(in_millis/60000) % 60
+    hours = math.floor(in_millis/3600000)
+    return f'{hours:02}:{minutes:02}:{seconds:02}:{millis:03}'
 
-    global on
-    global start_time
-    global last_paused
+def load_file(profile, name):
+    with open(f'{CONFIG_LOCATION}/{profile}/{name}', 'r') as file:
+        return json.load(file)
+def save_file(profile, name, data):
+    with open(f'{CONFIG_LOCATION}/{profile}/{name}', 'w') as file:
+        return json.dump(data, file, indent=4)
 
-    table = Table.grid()
+class Splitty:
 
-    if on:
-        current_time = int((time.time_ns()-start_time)/1000000)
-        hours = math.floor(current_time/(1000*60*60))
-        minutes = math.floor(current_time/(1000*60)) % 60
-        seconds = math.floor(current_time/(1000)) % 60
-        millis = current_time % 1000
-        result = Text(f'{hours:02}:{minutes:02}:{seconds:02}:{millis:03}', style='bold green')
-    else:
-        current_time = int((last_paused-start_time)/1000000)
-        hours = math.floor(current_time/(1000*60*60))
-        minutes = math.floor(current_time/(1000*60)) % 60
-        seconds = math.floor(current_time/(1000)) % 60
-        millis = current_time % 1000
-        result = Text(f'{hours:02}:{minutes:02}:{seconds:02}:{millis:03}', style='bold blue')
+    def __init__(self, profile=None):
 
-    table.add_row(result)
-    return table
+        with open(CONFIG_LOCATION+'/splitty.cfg', 'r') as file:
+            data = toml.load(file)
 
-def on_press(key):
+        self.profile = profile
+        self.running = True
+        self.start_time = 0
+        self.paused = True
+        self.saved_time = 0
+        self.split_times = []
+        self.split_index = 0
 
-    global on
-    global start_time
-    global last_paused
-    global running
-
-    if key == pynput.keyboard.KeyCode(char='p'):
-        on = not(on)
-        if not(on):
-            last_paused = time.time_ns()
+        if profile is None:
+            self.splits = []
+            self.golds = {}
         else:
-            time_diff = last_paused - start_time
-            start_time = time.time_ns() - time_diff
-    elif key == pynput.keyboard.KeyCode(char='o'):
-        running = False
-        if not(on):
-            time_diff = last_paused - start_time
-            start_time = time.time_ns() - time_diff
+            self.splits = load_file(profile, "splits")
+            self.golds = load_file(profile, "golds")
 
-        final_time = int((time.time_ns() - start_time)/1000000)
+        self.new_golds = copy.deepcopy(self.golds)
+        self.pause_key = data["keybinds"]["pause"]
+        self.close_key = data["keybinds"]["exit"]
+        self.reset_key = data["keybinds"]["reset"]
+        self.split_key = data["keybinds"]["split"]
+
+    def generate_table(self):
+        table = Table.grid()
+
+        if not self.paused:
+            time_passed = time.time_ns() - self.start_time
+        else:
+            time_passed = self.saved_time
+        table.add_row("Current time", style="bold")
+        table.add_row(format_time(time_passed))
+
+        if self.splits != []:
+            splits = Table.grid()
+            splits.add_column("Name")
+            splits.add_column("Seperator")
+            splits.add_column("Time")
+            splits.add_column("Seperator")
+            splits.add_column("Gold")
+            splits.add_row("Name", "", "Time", "", "Best time", style="bold")
+            for i, (name, time_taken) in enumerate(itertools.zip_longest(self.splits, self.split_times, fillvalue='--:--:--:---')):
+                if name not in self.golds:
+                    gold_time = '--:--:--:---'
+                else:
+                    gold_time = format_time(self.golds[name])
+                if i == self.split_index:
+                    splits.add_row(name, '    ', format_time(time_passed), '    ', gold_time)
+                else:
+                    splits.add_row(name, '    ', time_taken, '    ', gold_time)
+            table.add_row(splits)
+
+        return table
+
+    def end(self):
+        if self.paused:
+            final_time = self.saved_time
+        else:
+            final_time = time.time_ns() - self.start_time
         set_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with open(f'{os.environ.get("HOME")}/splitty/history', 'a') as file:
-            file.write(f'{set_time} {final_time}\n')
+            file.write(f'{set_time} {final_time/1000000}\n')
+        self.running = False
 
+    def on_press(self, key):
+        if key == keyboard.KeyCode(char=self.close_key):
+            self.end()
+        elif key == keyboard.KeyCode(char=self.pause_key):
+            self.paused = not(self.paused)
+            if self.paused:
+                self.saved_time = time.time_ns() - self.start_time
+            else:
+                self.start_time = time.time_ns() - self.saved_time
+        elif key == keyboard.KeyCode(char=self.split_key):
+            if self.paused:
+                final_time = self.saved_time
+            else:
+                final_time = time.time_ns() - self.start_time
+            self.split_times.append(format_time(final_time))
+            if self.splits != []:
+                if not(self.splits[self.split_index] in self.golds) or final_time < self.golds[self.splits[self.split_index]]:
+                    self.new_golds[self.splits[self.split_index]] = final_time
 
-def on_release(key):
-    return
+            self.split_index += 1
+            if self.split_index == len(self.splits) and self.splits != []:
+                save_file(self.profile, 'golds', self.new_golds)
+                self.end()
+        elif key == keyboard.KeyCode(char=self.reset_key):
+            self.end()
+            self.__init__(self.profile)
 
-home = os.environ.get('HOME')
+    def on_release(self, key):
+        return
 
-if '-h' in sys.argv:
-    print('Splitty - A minimal terminal-based speedrun timer for linux.')
-    print('Usage:')
-    print('     splitty -[h/i/l/c]')
-    print('        -h : displays this help message')
-    print('        -i : installs splitty')
-    print('        -l [key=speed] [--descending]: lists your past times. If no key is provided, it will sort by speed.')
-    print('        -c : clears time history')
-    print('     If no flags are provided, the timer will start. Use "p" to pause/unpause, and "o" to exit.')
-elif '-i' in sys.argv:
-    os.system(f'mkdir $HOME/splitty')
-    os.system(f'touch $HOME/splitty/history')
-    os.system(f'touch $HOME/splitty/history.bak')
-elif '-l' in sys.argv:
+    def main(self):
+        self.start_time = time.time_ns()
+        with Live(self.generate_table(), refresh_per_second=100) as self.live:
+            keyboard.Listener(
+                on_press=self.on_press,
+                on_release=self.on_release
+            ).start()
+            while self.running:
+                time.sleep(0.01)
+                self.live.update(self.generate_table())
 
-    if '-d' in sys.argv or '--descending' in sys.argv:
-        if len(sys.argv) == 4:
-            key = True
-        elif len(sys.argv) == 3:
-            key = False
-    else:
-        if len(sys.argv) == 3:
-            key = True
-        elif len(sys.argv) == 2:
-            key = False
+if __name__ == '__main__':
 
-    with open(f'{home}/splitty/history', 'r') as file:
-        content = file.read()
-
-    key = sys.argv[2] if key else "speed"
-    times = [[record.split(' ')[0], record.split(' ')[1], int(record.split(' ')[2])] for record in content.splitlines()]
-    sort_ind = {
-        "date": 0,
-        "time": 1,
-        "speed": 2
-    }[key]
-    result = sorted(times, key=lambda x: x[sort_ind], reverse=('-d' in sys.argv or '--descending' in sys.argv))
-    console = Console()
-    table = Table()
-    table.add_column("Date")
-    table.add_column("Time")
-    table.add_column("Speed (s)")
-    for result_ in result:
-        time_taken = round(result_[2]/1000, 2)
-        table.add_row(result_[0], result_[1], str(time_taken))
-    console.print(table)
-
-elif '-c' in sys.argv:
-    with open(f'{home}/splitty/history', 'r') as file:
-        backup = file.read()
-    with open(f'{home}/splitty/history', 'w') as file:
-        file.write('')
-    with open(f'{home}/splitty/history.bak', 'w') as file:
-        file.write(backup)
-else:
-    with Live(generate_table(), refresh_per_second=40) as live:
-        listener = pynput.keyboard.Listener(on_press=on_press, on_release=on_release)
-        listener.start()
-        while running:
-            time.sleep(0.05)
-            live.update(generate_table())
+    if sys.argv[1] == 'init':
+        os.system('mkdir $HOME/.config/splitty')
+        with open(CONFIG_LOCATION+'/splitty.cfg', 'w') as file:
+            file.write(DEFAULT_CONFIG)
+    elif sys.argv[1] == 'make':
+        profile_name = sys.argv[2]
+        os.system(f'mkdir $HOME/.config/splitty/{profile_name}')
+        with open(f'{CONFIG_LOCATION}/{profile_name}/splits', 'w') as file:
+            file.write('[]')
+        with open(f'{CONFIG_LOCATION}/{profile_name}/golds', 'w') as file:
+            file.write('{}')
+    elif sys.argv[1] == 'start':
+        if len(sys.argv) == 2:
+            inst = Splitty()
+            inst.main()
+        else:
+            profile = sys.argv[2]
+            inst = Splitty(profile)
+            inst.main()
