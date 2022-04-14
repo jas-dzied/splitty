@@ -8,6 +8,8 @@ To launch the timer without any splits, just use `splitty start`
 
 To use splits, first create a new profile with `splitty make [name]`, and then you can edit the `splits` file, which is in a simple json format, to add splits. Then, you can use the splits with `splitty start [name]`
 
+To start do `splitty start`
+
 # Dependancies
 
 Splitty depends on the following pip libraries:
